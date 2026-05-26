@@ -174,6 +174,11 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Stop existing containers
+        run: docker compose down -v --remove-orphans
+        working-directory: ${{ github.workspace }}
+        continue-on-error: true
+
       - name: Rebuild and restart Docker containers
         run: docker compose up -d --build
         working-directory: ${{ github.workspace }}
