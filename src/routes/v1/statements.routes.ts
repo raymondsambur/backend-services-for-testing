@@ -45,7 +45,11 @@ router.use(authMiddleware as unknown as RequestHandler);
  *       200:
  *         description: Statement generated successfully
  *       400:
- *         description: Invalid date range
+ *         description: Invalid date range or query parameters
+ *       403:
+ *         description: Forbidden - not the account owner
+ *       404:
+ *         description: Account not found
  */
 router.get('/', getStatement);
 

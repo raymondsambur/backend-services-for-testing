@@ -112,10 +112,14 @@ router.get('/:id', getWalletDetails);
  *     responses:
  *       200:
  *         description: Payment method linked successfully
+ *       403:
+ *         description: Forbidden - not the wallet owner
  *       404:
  *         description: Wallet or payment method not found
  *       409:
- *         description: Payment method already linked to another wallet
+ *         description: Payment method already linked to a wallet
+ *       422:
+ *         description: Validation error
  */
 router.post('/:id/payment-methods', validate(linkPaymentMethodSchema), linkPaymentMethod);
 

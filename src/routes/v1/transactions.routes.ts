@@ -50,6 +50,10 @@ router.use(authMiddleware as unknown as RequestHandler);
  *     responses:
  *       201:
  *         description: Deposit created successfully
+ *       403:
+ *         description: Forbidden - not the account owner
+ *       404:
+ *         description: Account not found
  *       422:
  *         description: Validation error
  */
@@ -85,6 +89,10 @@ router.post('/deposit', validate(depositSchema), deposit);
  *     responses:
  *       201:
  *         description: Withdrawal created successfully
+ *       403:
+ *         description: Forbidden - not the account owner
+ *       404:
+ *         description: Account not found
  *       422:
  *         description: Insufficient funds or validation error
  */
@@ -124,8 +132,10 @@ router.post('/withdraw', validate(withdrawSchema), withdraw);
  *     responses:
  *       201:
  *         description: Transfer created successfully
+ *       403:
+ *         description: Forbidden - not the source account owner
  *       404:
- *         description: Destination account not found
+ *         description: Source or destination account not found
  *       422:
  *         description: Insufficient funds or validation error
  */
@@ -153,6 +163,12 @@ router.post('/transfer', validate(transferSchema), transfer);
  *     responses:
  *       200:
  *         description: Paginated list of transactions
+ *       400:
+ *         description: Missing accountId query parameter
+ *       403:
+ *         description: Forbidden - not the account owner
+ *       404:
+ *         description: Account not found
  */
 router.get(
   '/',
@@ -181,8 +197,12 @@ router.get(
  *     responses:
  *       200:
  *         description: Transaction details
+ *       400:
+ *         description: Missing accountId query parameter
+ *       403:
+ *         description: Forbidden - not the account owner
  *       404:
- *         description: Transaction not found
+ *         description: Account or transaction not found
  */
 router.get('/reference/:referenceId', getTransactionByReference);
 

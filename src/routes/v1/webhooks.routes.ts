@@ -70,8 +70,10 @@ router.post('/', validate(registerWebhookSchema), registerWebhook);
  *     responses:
  *       204:
  *         description: Webhook subscription deleted
+ *       403:
+ *         description: Forbidden - subscription belongs to another user
  *       404:
- *         description: Webhook not found
+ *         description: Webhook subscription not found
  */
 router.delete('/:id', deleteWebhook);
 

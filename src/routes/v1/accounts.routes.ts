@@ -292,7 +292,7 @@ router.put('/:id', validate(updateAccountSchema), updateAccount);
  *         description: Forbidden - not the account owner
  *       404:
  *         description: Account not found
- *       422:
+ *       409:
  *         description: Cannot delete account with non-zero balance
  */
 router.delete('/:id', deleteAccount);

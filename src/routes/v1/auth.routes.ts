@@ -243,7 +243,7 @@ router.post('/api-keys', authMiddleware as unknown as RequestHandler, generateAp
  *           format: uuid
  *         description: API key ID to revoke
  *     responses:
- *       204:
+ *       200:
  *         description: API key revoked successfully
  *       401:
  *         description: Unauthorized
