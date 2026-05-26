@@ -164,3 +164,37 @@ jobs:
       - name: Stop services
         if: always()
         run: docker compose down -v
+
+  # ─── Deploy to Local Docker ─────────────────────────────────────────────────
+  deploy-local:
+    name: Deploy to Local Docker
+    runs-on: [self-hosted, windows]
+    needs: [lint-and-typecheck, unit-tests, integration-tests, docker-build]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Rebuild and restart Docker containers
+        run: docker compose up -d --build
+        working-directory: ${{ github.workspace }}
+
+      - name: Wait for API health check
+        run: |
+          Write-Host "Waiting for API to be healthy..."
+          $timeout = 90
+          $elapsed = 0
+          while ($elapsed -lt $timeout) {
+            try {
+              $response = Invoke-WebRequest -Uri http://localhost:3000/health -UseBasicParsing -ErrorAction Stop
+              if ($response.StatusCode -eq 200) {
+                Write-Host "API is healthy after ${elapsed}s"
+                exit 0
+              }
+            } catch {}
+            Start-Sleep -Seconds 3
+            $elapsed += 3
+          }
+          Write-Host "Health check failed after ${timeout}s"
+          docker compose logs api
+          exit 1
+        shell: pwsh
