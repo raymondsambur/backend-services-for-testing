@@ -69,7 +69,6 @@ jobs:
   integration-tests:
     name: Integration Tests
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
     services:
       postgres:
         image: postgres:16-alpine
@@ -116,7 +115,6 @@ jobs:
   docker-build:
     name: Docker Build & Health Check
     runs-on: ubuntu-latest
-    if: github.event_name == 'pull_request'
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
