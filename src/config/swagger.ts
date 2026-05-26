@@ -2,7 +2,7 @@ import swaggerJsdoc from 'swagger-jsdoc';
 import path from 'path';
 
 // Resolve the routes directory based on whether we're running from src (dev) or dist (production)
-const routesGlob = path.resolve(__dirname, '..', 'routes', '**', '*.{ts,js}');
+const routesGlob = path.resolve(__dirname, '..', 'routes', '**', '*.{ts,js}').replace(/\\/g, '/');
 
 const options: swaggerJsdoc.Options = {
   definition: {

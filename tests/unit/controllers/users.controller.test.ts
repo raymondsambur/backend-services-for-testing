@@ -60,6 +60,7 @@ describe('Users Controller - listUsers', () => {
 
     expect(mockRes.status).toHaveBeenCalledWith(200);
     expect(mockRes.json).toHaveBeenCalledWith({
+      message: 'Users retrieved successfully',
       data: [
         {
           id: 'user-1',
@@ -95,6 +96,7 @@ describe('Users Controller - listUsers', () => {
 
     expect(mockRes.status).toHaveBeenCalledWith(200);
     expect(mockRes.json).toHaveBeenCalledWith({
+      message: 'Users retrieved successfully',
       data: [],
       meta: { total: 0 },
     });

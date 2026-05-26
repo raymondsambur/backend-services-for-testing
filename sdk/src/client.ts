@@ -833,8 +833,21 @@ export class ApiClient {
 
   private throwApiError(response: HttpResponse): never {
     try {
-      const errorData = JSON.parse(response.body) as ApiErrorData;
-      throw new ApiError(errorData);
+      const errorData = JSON.parse(response.body);
+      if (
+        errorData &&
+        typeof errorData === 'object' &&
+        typeof errorData.status === 'number' &&
+        typeof errorData.error === 'string'
+      ) {
+        throw new ApiError(errorData as ApiErrorData);
+      }
+      // Parsed JSON but not a valid error response shape
+      throw new ApiError({
+        status: response.status,
+        error: 'Unknown Error',
+        message: response.body || 'Unknown error occurred',
+      });
     } catch (err) {
       if (err instanceof ApiError) throw err;
       throw new ApiError({
