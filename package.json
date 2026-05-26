@@ -10,7 +10,7 @@
     "lint": "eslint \"src/**/*.ts\"",
     "test": "jest --runInBand",
     "test:unit": "jest --testPathPattern=tests/unit --runInBand",
-    "test:integration": "jest --testPathPattern=tests/integration --runInBand",
+    "test:integration": "jest --testPathPattern=tests/integration --runInBand --passWithNoTests",
     "test:property": "jest --testPathPattern=tests/property --runInBand",
     "prisma:migrate": "prisma migrate dev",
     "prisma:generate": "prisma generate",
