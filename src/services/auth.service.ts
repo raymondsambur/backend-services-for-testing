@@ -136,6 +136,9 @@ class AuthService implements IAuthService {
     // Generate a random API key
     const rawKey = crypto.randomBytes(32).toString('hex');
 
+    // Extract the first 8 characters as a prefix for optimized lookup
+    const prefix = rawKey.substring(0, 8);
+
     // Store the bcrypt hash of the key
     const keyHash = await bcrypt.hash(rawKey, BCRYPT_COST_FACTOR);
 
@@ -143,6 +146,7 @@ class AuthService implements IAuthService {
       data: {
         userId,
         keyHash,
+        prefix,
       },
     });
 

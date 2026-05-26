@@ -1,16 +1,37 @@
 # API Testing Backend
 
-A backend API service designed as a practice target for automation API testing. The service simulates a financial sector application with users, accounts, transactions, wallets, payment methods, beneficiaries, statements, and notifications.
+A production-hardened backend API service designed as a practice target for automation API testing. The service simulates a financial sector application with users, accounts, transactions, wallets, payment methods, beneficiaries, statements, and notifications.
 
 ## Tech Stack
 
 - **Runtime:** Node.js 20 LTS
-- **Framework:** Express.js with TypeScript
+- **Framework:** Express.js 4.21 with TypeScript
 - **Database:** PostgreSQL 16
-- **ORM:** Prisma
-- **Authentication:** JWT + API Key
+- **ORM:** Prisma 5
+- **Authentication:** JWT + API Key (prefix-optimized lookup)
 - **Validation:** Zod
 - **Documentation:** Swagger/OpenAPI 3.0
+- **Security:** Helmet, CORS allowlist, request size limits
+- **Performance:** Response compression (gzip/brotli), database indexes
+- **CI/CD:** GitHub Actions with npm audit, Trivy container scanning, Dependabot
+
+## Security Features
+
+- **Helmet** security headers on all responses (CSP, HSTS, X-Frame-Options, etc.)
+- **CORS** restricted to configured origins in production, open in development
+- **Request body size limit** of 1 MB with proper 413 error responses
+- **JWT secret validation** prevents startup with default/empty secrets in production
+- **API key prefix optimization** for O(1) lookup instead of full table scan
+- **npm audit** in CI fails builds on high/critical vulnerabilities
+- **Trivy container scanning** fails builds on critical image vulnerabilities
+- **Dependabot** automated dependency update PRs (weekly, grouped minor/patch)
+
+## Reliability
+
+- **Atomic transactions** with row-level locking (`SELECT FOR UPDATE`) for deposits, withdrawals, and transfers
+- **Deadlock prevention** via consistent lock ordering (lower account ID first) for transfers
+- **Graceful shutdown** on SIGTERM/SIGINT with 10-second drain timeout
+- **Response compression** with 1 KB threshold (brotli preferred over gzip)
 
 ## Getting Started
 
@@ -38,6 +59,26 @@ npx prisma migrate dev
 # Seed the database
 npx prisma db seed
 ```
+
+### Environment Variables
+
+Copy `.env.example` to `.env` and configure:
+
+```bash
+cp .env.example .env
+```
+
+Key variables:
+
+| Variable | Description | Required in Production |
+|----------|-------------|----------------------|
+| `DATABASE_URL` | PostgreSQL connection string | Yes |
+| `JWT_SECRET` | JWT signing secret (must not be default) | Yes |
+| `JWT_REFRESH_SECRET` | Refresh token secret (must not be default) | Yes |
+| `CORS_ORIGINS` | Comma-separated allowed origins | Yes |
+| `NODE_ENV` | Environment (`development`, `production`) | Yes |
+
+> **Note:** The server will refuse to start in production if `JWT_SECRET` or `JWT_REFRESH_SECRET` are set to their default values or left empty.
 
 ### Running the Server
 
@@ -103,8 +144,27 @@ Interactive Swagger documentation is available at `/docs` when the server is run
 | `npm start` | Start production server |
 | `npm test` | Run all tests |
 | `npm run test:unit` | Run unit tests |
-| `npm run test:integration` | Run integration tests |
+| `npm run test:integration` | Run integration tests (requires PostgreSQL) |
 | `npm run test:property` | Run property-based tests |
+| `npm run lint` | Run ESLint |
 | `npm run prisma:migrate` | Run database migrations |
 | `npm run prisma:generate` | Generate Prisma client |
 | `npm run prisma:seed` | Seed the database |
+
+## Testing
+
+The project includes three levels of testing:
+
+- **Unit tests** (168 tests) — Service logic with mocked dependencies
+- **Property-based tests** (156 tests) — Formal correctness properties using fast-check
+- **Integration tests** — Full request lifecycle against a real PostgreSQL database
+
+```bash
+# Run all tests
+npm test
+
+# Run specific test suites
+npm run test:unit
+npm run test:property
+npm run test:integration
+```

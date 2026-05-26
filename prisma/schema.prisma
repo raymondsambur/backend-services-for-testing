@@ -79,6 +79,7 @@ model Transaction {
 
   account Account @relation(fields: [accountId], references: [id], onDelete: Cascade)
 
+  @@index([accountId, createdAt(sort: Desc)])
   @@map("transactions")
 }
 
@@ -146,12 +147,14 @@ model Notification {
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([userId, isRead])
   @@map("notifications")
 }
 
 model ApiKey {
   id        String    @id @default(uuid())
   userId    String    @map("user_id")
+  prefix    String?   @db.VarChar(8)
   keyHash   String    @map("key_hash")
   isRevoked Boolean   @default(false) @map("is_revoked")
   createdAt DateTime  @default(now()) @map("created_at")
@@ -159,6 +162,8 @@ model ApiKey {
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@index([prefix, isRevoked])
+  @@index([userId, isRevoked])
   @@map("api_keys")
 }
 
@@ -172,6 +177,7 @@ model RefreshToken {
 
   user User @relation(fields: [userId], references: [id], onDelete: Cascade)
 
+  @@unique([tokenHash])
   @@map("refresh_tokens")
 }
 

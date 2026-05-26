@@ -10,6 +10,16 @@ import { Decimal } from '@prisma/client/runtime/library';
 
 // --- Mock Setup ---
 
+const mockQueryRaw = jest.fn();
+const mockTxAccountUpdate = jest.fn();
+const mockTxTransactionCreate = jest.fn();
+
+const mockTx = {
+  $queryRaw: mockQueryRaw,
+  account: { update: mockTxAccountUpdate },
+  transaction: { create: mockTxTransactionCreate },
+};
+
 jest.mock('@config/database', () => {
   const mockPrisma = {
     account: {
@@ -33,7 +43,9 @@ jest.mock('@config/database', () => {
       count: jest.fn(),
       update: jest.fn(),
     },
-    $transaction: jest.fn(),
+    $transaction: jest.fn(async (callback: (tx: typeof mockTx) => Promise<unknown>) => {
+      return callback(mockTx);
+    }),
   };
   return {
     __esModule: true,
@@ -41,6 +53,22 @@ jest.mock('@config/database', () => {
     prisma: mockPrisma,
   };
 });
+
+// Mock notification service
+const mockCreateForTransaction = jest.fn().mockResolvedValue({});
+jest.mock('@services/notifications.service', () => ({
+  __esModule: true,
+  notificationService: { createForTransaction: mockCreateForTransaction },
+  default: { createForTransaction: mockCreateForTransaction },
+}));
+
+// Mock webhook service
+const mockDispatchEvent = jest.fn().mockResolvedValue(undefined);
+jest.mock('@services/webhooks.service', () => ({
+  __esModule: true,
+  webhookService: { dispatchEvent: mockDispatchEvent },
+  default: { dispatchEvent: mockDispatchEvent },
+}));
 
 // Import after mocking
 import prisma from '@config/database';
@@ -117,17 +145,11 @@ function createMockTransaction(
 
 // --- Property Tests ---
 
-// Global setup: ensure notification.create mock returns a valid object
-// since transaction service now creates notifications after each transaction
+// Global setup: clear mocks before each test
 beforeEach(() => {
-  (mockPrisma.notification.create as jest.Mock).mockResolvedValue({
-    id: crypto.randomUUID(),
-    userId: 'mock-user',
-    message: 'mock notification',
-    isRead: false,
-    metadata: {},
-    createdAt: new Date(),
-  });
+  jest.clearAllMocks();
+  mockCreateForTransaction.mockResolvedValue({});
+  mockDispatchEvent.mockResolvedValue(undefined);
 });
 
 describe('Property 8: Resource ownership isolation', () => {
@@ -216,13 +238,28 @@ describe('Property 9: Transaction balance conservation', () => {
         const mockAccount = createMockAccount(userId, initialBalance, accountId);
         const expectedNewBalance = initialBalance + amount;
 
+        jest.clearAllMocks();
+        mockCreateForTransaction.mockResolvedValue({});
+        mockDispatchEvent.mockResolvedValue(undefined);
+
         (mockPrisma.account.findUnique as jest.Mock).mockResolvedValue(mockAccount);
 
-        const mockTx = createMockTransaction(accountId, 'DEPOSIT', amount, expectedNewBalance);
-        (mockPrisma.$transaction as jest.Mock).mockResolvedValue([
-          { ...mockAccount, balance: new Decimal(expectedNewBalance) },
-          mockTx,
-        ]);
+        // Mock the interactive transaction internals
+        mockQueryRaw.mockResolvedValue([{ balance: new Decimal(initialBalance) }]);
+        mockTxAccountUpdate.mockResolvedValue({
+          ...mockAccount,
+          balance: new Decimal(expectedNewBalance),
+        });
+        mockTxTransactionCreate.mockResolvedValue({
+          id: crypto.randomUUID(),
+          accountId,
+          destinationAccountId: null,
+          referenceId: crypto.randomUUID(),
+          type: 'DEPOSIT',
+          amount: new Decimal(amount),
+          resultingBalance: new Decimal(expectedNewBalance),
+          createdAt: new Date(),
+        });
 
         const result = await transactionService.deposit(userId, accountId, amount);
 
@@ -231,12 +268,8 @@ describe('Property 9: Transaction balance conservation', () => {
         expect(result.type).toBe('DEPOSIT');
         expect(result.amount).toBeCloseTo(amount, 2);
 
-        // Verify the update was called with correct new balance
-        expect(mockPrisma.$transaction).toHaveBeenCalledWith(
-          expect.arrayContaining([
-            expect.objectContaining({}),
-          ])
-        );
+        // Verify the interactive transaction was called
+        expect(mockPrisma.$transaction).toHaveBeenCalled();
       }),
       { numRuns: 100 }
     );
@@ -251,13 +284,28 @@ describe('Property 9: Transaction balance conservation', () => {
         const mockAccount = createMockAccount(userId, initialBalance, accountId);
         const expectedNewBalance = initialBalance - amount;
 
+        jest.clearAllMocks();
+        mockCreateForTransaction.mockResolvedValue({});
+        mockDispatchEvent.mockResolvedValue(undefined);
+
         (mockPrisma.account.findUnique as jest.Mock).mockResolvedValue(mockAccount);
 
-        const mockTx = createMockTransaction(accountId, 'WITHDRAWAL', amount, expectedNewBalance);
-        (mockPrisma.$transaction as jest.Mock).mockResolvedValue([
-          { ...mockAccount, balance: new Decimal(expectedNewBalance) },
-          mockTx,
-        ]);
+        // Mock the interactive transaction internals
+        mockQueryRaw.mockResolvedValue([{ balance: new Decimal(initialBalance) }]);
+        mockTxAccountUpdate.mockResolvedValue({
+          ...mockAccount,
+          balance: new Decimal(expectedNewBalance),
+        });
+        mockTxTransactionCreate.mockResolvedValue({
+          id: crypto.randomUUID(),
+          accountId,
+          destinationAccountId: null,
+          referenceId: crypto.randomUUID(),
+          type: 'WITHDRAWAL',
+          amount: new Decimal(amount),
+          resultingBalance: new Decimal(expectedNewBalance),
+          createdAt: new Date(),
+        });
 
         const result = await transactionService.withdraw(userId, accountId, amount);
 
@@ -287,23 +335,40 @@ describe('Property 9: Transaction balance conservation', () => {
           const expectedSourceBalance = sourceBalance - amount;
           const expectedDestBalance = destBalance + amount;
 
-          // First call: source account lookup
+          jest.clearAllMocks();
+          mockCreateForTransaction.mockResolvedValue({});
+          mockDispatchEvent.mockResolvedValue(undefined);
+
+          // First call: source account lookup, second call: dest account lookup
           (mockPrisma.account.findUnique as jest.Mock)
             .mockResolvedValueOnce(sourceAccount)
             .mockResolvedValueOnce(destAccount);
 
-          const mockTx = createMockTransaction(
-            sourceAccountId,
-            'TRANSFER',
-            amount,
-            expectedSourceBalance,
-            destAccountId
-          );
-          (mockPrisma.$transaction as jest.Mock).mockResolvedValue([
-            { ...sourceAccount, balance: new Decimal(expectedSourceBalance) },
-            { ...destAccount, balance: new Decimal(expectedDestBalance) },
-            mockTx,
-          ]);
+          // Mock the interactive transaction internals
+          // $queryRaw is called multiple times: SET LOCAL, lock ordering, and balance check
+          mockQueryRaw.mockResolvedValue([{ balance: new Decimal(sourceBalance) }]);
+
+          // First update: source decrement, second update: dest increment
+          mockTxAccountUpdate
+            .mockResolvedValueOnce({
+              ...sourceAccount,
+              balance: new Decimal(expectedSourceBalance),
+            })
+            .mockResolvedValueOnce({
+              ...destAccount,
+              balance: new Decimal(expectedDestBalance),
+            });
+
+          mockTxTransactionCreate.mockResolvedValue({
+            id: crypto.randomUUID(),
+            accountId: sourceAccountId,
+            destinationAccountId: destAccountId,
+            referenceId: crypto.randomUUID(),
+            type: 'TRANSFER',
+            amount: new Decimal(amount),
+            resultingBalance: new Decimal(expectedSourceBalance),
+            createdAt: new Date(),
+          });
 
           const result = await transactionService.transfer(userId, sourceAccountId, destAccountId, amount);
 
@@ -337,14 +402,24 @@ describe('Property 10: Insufficient funds leaves balance unchanged', () => {
         const accountId = crypto.randomUUID();
         const mockAccount = createMockAccount(userId, balance, accountId);
 
+        jest.clearAllMocks();
+        mockCreateForTransaction.mockResolvedValue({});
+        mockDispatchEvent.mockResolvedValue(undefined);
+
         (mockPrisma.account.findUnique as jest.Mock).mockResolvedValue(mockAccount);
+
+        // Mock the interactive transaction internals - $queryRaw returns locked balance
+        // The callback will throw ValidationError when amount > balance
+        mockQueryRaw.mockResolvedValue([{ balance: new Decimal(balance) }]);
 
         await expect(
           transactionService.withdraw(userId, accountId, amount)
         ).rejects.toThrow(ValidationError);
 
-        // No transaction should have been executed
-        expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+        // $transaction IS called (the check happens inside the interactive transaction)
+        expect(mockPrisma.$transaction).toHaveBeenCalled();
+        // But account.update should NOT have been called (insufficient funds)
+        expect(mockTxAccountUpdate).not.toHaveBeenCalled();
       }),
       { numRuns: 100 }
     );
@@ -360,16 +435,26 @@ describe('Property 10: Insufficient funds leaves balance unchanged', () => {
         const sourceAccount = createMockAccount(userId, sourceBalance, sourceAccountId);
         const destAccount = createMockAccount(crypto.randomUUID(), 500, destAccountId);
 
+        jest.clearAllMocks();
+        mockCreateForTransaction.mockResolvedValue({});
+        mockDispatchEvent.mockResolvedValue(undefined);
+
         (mockPrisma.account.findUnique as jest.Mock)
           .mockResolvedValueOnce(sourceAccount)
           .mockResolvedValueOnce(destAccount);
+
+        // Mock the interactive transaction internals - $queryRaw returns locked balance
+        // The callback will throw ValidationError when amount > sourceBalance
+        mockQueryRaw.mockResolvedValue([{ balance: new Decimal(sourceBalance) }]);
 
         await expect(
           transactionService.transfer(userId, sourceAccountId, destAccountId, amount)
         ).rejects.toThrow(ValidationError);
 
-        // No transaction should have been executed
-        expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+        // $transaction IS called (the check happens inside the interactive transaction)
+        expect(mockPrisma.$transaction).toHaveBeenCalled();
+        // But account.update should NOT have been called (insufficient funds)
+        expect(mockTxAccountUpdate).not.toHaveBeenCalled();
       }),
       { numRuns: 100 }
     );

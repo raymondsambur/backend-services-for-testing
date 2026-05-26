@@ -91,16 +91,24 @@ async function authenticateWithJwt(
 }
 
 /**
- * Validate API key by iterating active (non-revoked) keys and comparing with bcrypt.
+ * Validate API key using prefix-based lookup for efficient authentication.
+ * Falls back to full scan for legacy keys without a stored prefix.
  * Sets req.user on success.
  */
 async function authenticateWithApiKey(
   req: AuthenticatedRequest,
   apiKey: string
 ): Promise<void> {
-  // Get all active (non-revoked) API keys
-  const activeKeys = await prisma.apiKey.findMany({
-    where: { isRevoked: false },
+  // Reject keys shorter than 8 characters immediately
+  if (apiKey.length < 8) {
+    throw new UnauthorizedError('Invalid API key');
+  }
+
+  const prefix = apiKey.substring(0, 8);
+
+  // Query non-revoked keys matching the prefix
+  const candidates = await prisma.apiKey.findMany({
+    where: { prefix, isRevoked: false },
     include: {
       user: {
         select: { id: true, email: true, role: true },
@@ -108,10 +116,30 @@ async function authenticateWithApiKey(
     },
   });
 
-  // Iterate and compare with bcrypt
-  for (const keyRecord of activeKeys) {
-    const isMatch = await bcrypt.compare(apiKey, keyRecord.keyHash);
-    if (isMatch) {
+  // Check prefix-matched candidates with bcrypt
+  for (const candidate of candidates) {
+    if (await bcrypt.compare(apiKey, candidate.keyHash)) {
+      req.user = {
+        id: candidate.user.id,
+        email: candidate.user.email,
+        role: candidate.user.role.toLowerCase() as 'user' | 'admin',
+      };
+      return;
+    }
+  }
+
+  // Fall back to full scan for legacy keys without a stored prefix
+  const legacyKeys = await prisma.apiKey.findMany({
+    where: { prefix: null, isRevoked: false },
+    include: {
+      user: {
+        select: { id: true, email: true, role: true },
+      },
+    },
+  });
+
+  for (const keyRecord of legacyKeys) {
+    if (await bcrypt.compare(apiKey, keyRecord.keyHash)) {
       req.user = {
         id: keyRecord.user.id,
         email: keyRecord.user.email,

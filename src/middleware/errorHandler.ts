@@ -69,6 +69,17 @@ export function errorHandler(
   let message = 'An internal server error occurred';
   let details: FieldError[] | undefined;
 
+  if ((err as any).type === 'entity.too.large') {
+    // Request body exceeded configured size limit (e.g., 1MB)
+    res.status(413).json({
+      status: 413,
+      error: 'Payload Too Large',
+      message: 'Request body exceeded maximum allowed size of 1MB',
+      timestamp: new Date().toISOString(),
+    });
+    return;
+  }
+
   if (err instanceof ValidationError) {
     // Custom ValidationError with field-level details
     statusCode = err.statusCode;

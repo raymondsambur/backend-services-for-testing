@@ -4,6 +4,7 @@ import prisma from '../config/database';
 import { PaginationParams, PaginatedResult } from '../types';
 import { calculateOffset, buildPaginationMeta } from '../utils/pagination';
 import {
+  AppError,
   NotFoundError,
   ForbiddenError,
   ValidationError,
@@ -52,13 +53,27 @@ function toTransaction(record: {
   };
 }
 
+/**
+ * Detects PostgreSQL lock timeout errors.
+ * Error code 55P03 = lock_not_available (lock timeout exceeded).
+ */
+function isLockTimeoutError(error: unknown): boolean {
+  if (error && typeof error === 'object' && 'code' in error) {
+    return (error as { code: string }).code === '55P03';
+  }
+  if (error instanceof Error && error.message.includes('lock timeout')) {
+    return true;
+  }
+  return false;
+}
+
 class TransactionService implements ITransactionService {
   /**
    * Deposit funds into an account.
-   * Increases account balance and records the transaction with resulting balance.
+   * Uses row-level locking and atomic increment for concurrency safety.
    */
   async deposit(userId: string, accountId: string, amount: number): Promise<Transaction> {
-    // Verify account exists and belongs to user
+    // Ownership check remains outside transaction (read-only)
     const account = await prisma.account.findUnique({ where: { id: accountId } });
 
     if (!account) {
@@ -69,25 +84,39 @@ class TransactionService implements ITransactionService {
       throw new ForbiddenError('Access forbidden');
     }
 
-    const referenceId = crypto.randomUUID();
-    const newBalance = Number(account.balance) + amount;
+    let result: Transaction;
 
-    // Update balance and create transaction atomically
-    const [, transaction] = await prisma.$transaction([
-      prisma.account.update({
-        where: { id: accountId },
-        data: { balance: newBalance },
-      }),
-      prisma.transaction.create({
-        data: {
-          accountId,
-          referenceId,
-          type: 'DEPOSIT',
-          amount,
-          resultingBalance: newBalance,
-        },
-      }),
-    ]);
+    try {
+      result = await prisma.$transaction(async (tx) => {
+        // Acquire row-level lock with timeout
+        await tx.$queryRaw`SET LOCAL lock_timeout = '5s'`;
+        await tx.$queryRaw`SELECT balance FROM accounts WHERE id = ${accountId} FOR UPDATE`;
+
+        // Atomic increment
+        const updated = await tx.account.update({
+          where: { id: accountId },
+          data: { balance: { increment: amount } },
+        });
+
+        // Record transaction with resulting balance from the atomic update
+        const transaction = await tx.transaction.create({
+          data: {
+            accountId,
+            referenceId: crypto.randomUUID(),
+            type: 'DEPOSIT',
+            amount,
+            resultingBalance: updated.balance,
+          },
+        });
+
+        return toTransaction(transaction);
+      }, { timeout: 10000 });
+    } catch (error: unknown) {
+      if (isLockTimeoutError(error)) {
+        throw new AppError('Transaction could not be completed. Please retry.', 503);
+      }
+      throw error;
+    }
 
     // Create notification for the account owner
     await notificationService.createForTransaction(userId, 'DEPOSIT', amount, accountId);
@@ -96,18 +125,18 @@ class TransactionService implements ITransactionService {
     webhookService.dispatchEvent(userId, {
       type: 'transaction.completed',
       timestamp: new Date().toISOString(),
-      data: { transaction: toTransaction(transaction) },
+      data: { transaction: result },
     }).catch(() => { /* fire-and-forget */ });
 
-    return toTransaction(transaction);
+    return result;
   }
 
   /**
    * Withdraw funds from an account.
-   * Checks sufficient funds, decreases balance, and records the transaction.
+   * Uses row-level locking to verify sufficient funds under lock before atomic decrement.
    */
   async withdraw(userId: string, accountId: string, amount: number): Promise<Transaction> {
-    // Verify account exists and belongs to user
+    // Ownership check remains outside transaction (read-only)
     const account = await prisma.account.findUnique({ where: { id: accountId } });
 
     if (!account) {
@@ -118,33 +147,46 @@ class TransactionService implements ITransactionService {
       throw new ForbiddenError('Access forbidden');
     }
 
-    const currentBalance = Number(account.balance);
+    let result: Transaction;
 
-    if (amount > currentBalance) {
-      throw new ValidationError('Insufficient funds', [
-        { field: 'amount', message: 'Withdrawal amount exceeds account balance' },
-      ]);
+    try {
+      result = await prisma.$transaction(async (tx) => {
+        // Acquire row-level lock with timeout
+        await tx.$queryRaw`SET LOCAL lock_timeout = '5s'`;
+        const locked = await tx.$queryRaw<{ balance: Decimal }[]>`SELECT balance FROM accounts WHERE id = ${accountId} FOR UPDATE`;
+
+        // Check sufficient funds after acquiring lock
+        if (amount > Number(locked[0].balance)) {
+          throw new ValidationError('Insufficient funds', [
+            { field: 'amount', message: 'Withdrawal amount exceeds account balance' },
+          ]);
+        }
+
+        // Atomic decrement
+        const updated = await tx.account.update({
+          where: { id: accountId },
+          data: { balance: { decrement: amount } },
+        });
+
+        // Record transaction with resulting balance from the atomic update
+        const transaction = await tx.transaction.create({
+          data: {
+            accountId,
+            referenceId: crypto.randomUUID(),
+            type: 'WITHDRAWAL',
+            amount,
+            resultingBalance: updated.balance,
+          },
+        });
+
+        return toTransaction(transaction);
+      }, { timeout: 10000 });
+    } catch (error: unknown) {
+      if (isLockTimeoutError(error)) {
+        throw new AppError('Transaction could not be completed. Please retry.', 503);
+      }
+      throw error;
     }
-
-    const referenceId = crypto.randomUUID();
-    const newBalance = currentBalance - amount;
-
-    // Update balance and create transaction atomically
-    const [, transaction] = await prisma.$transaction([
-      prisma.account.update({
-        where: { id: accountId },
-        data: { balance: newBalance },
-      }),
-      prisma.transaction.create({
-        data: {
-          accountId,
-          referenceId,
-          type: 'WITHDRAWAL',
-          amount,
-          resultingBalance: newBalance,
-        },
-      }),
-    ]);
 
     // Create notification for the account owner
     await notificationService.createForTransaction(userId, 'WITHDRAWAL', amount, accountId);
@@ -153,15 +195,15 @@ class TransactionService implements ITransactionService {
     webhookService.dispatchEvent(userId, {
       type: 'transaction.completed',
       timestamp: new Date().toISOString(),
-      data: { transaction: toTransaction(transaction) },
+      data: { transaction: result },
     }).catch(() => { /* fire-and-forget */ });
 
-    return toTransaction(transaction);
+    return result;
   }
 
   /**
    * Transfer funds between accounts atomically.
-   * Decreases source balance, increases destination balance, records transaction.
+   * Uses row-level locking with consistent lock ordering (lower ID first) to prevent deadlocks.
    */
   async transfer(
     userId: string,
@@ -187,39 +229,61 @@ class TransactionService implements ITransactionService {
       throw new NotFoundError('Destination account not found');
     }
 
-    const sourceBalance = Number(sourceAccount.balance);
+    let result: Transaction;
 
-    if (amount > sourceBalance) {
-      throw new ValidationError('Insufficient funds', [
-        { field: 'amount', message: 'Transfer amount exceeds source account balance' },
-      ]);
+    try {
+      result = await prisma.$transaction(async (tx) => {
+        // Acquire row-level lock with timeout
+        await tx.$queryRaw`SET LOCAL lock_timeout = '5s'`;
+
+        // Acquire locks in consistent order (lower account ID first) to prevent deadlocks
+        const [firstId, secondId] = sourceAccountId < destAccountId
+          ? [sourceAccountId, destAccountId]
+          : [destAccountId, sourceAccountId];
+
+        await tx.$queryRaw`SELECT id FROM accounts WHERE id IN (${firstId}, ${secondId}) ORDER BY id FOR UPDATE`;
+
+        // Re-read source balance under lock to verify sufficient funds
+        const locked = await tx.$queryRaw<{ balance: Decimal }[]>`SELECT balance FROM accounts WHERE id = ${sourceAccountId}`;
+
+        if (amount > Number(locked[0].balance)) {
+          throw new ValidationError('Insufficient funds', [
+            { field: 'amount', message: 'Transfer amount exceeds source account balance' },
+          ]);
+        }
+
+        // Atomic decrement on source
+        const updatedSource = await tx.account.update({
+          where: { id: sourceAccountId },
+          data: { balance: { decrement: amount } },
+        });
+
+        // Atomic increment on destination
+        await tx.account.update({
+          where: { id: destAccountId },
+          data: { balance: { increment: amount } },
+        });
+
+        // Record transaction with resulting balance from the source atomic update
+        const transaction = await tx.transaction.create({
+          data: {
+            accountId: sourceAccountId,
+            destinationAccountId: destAccountId,
+            referenceId: crypto.randomUUID(),
+            type: 'TRANSFER',
+            amount,
+            resultingBalance: updatedSource.balance,
+          },
+        });
+
+        return toTransaction(transaction);
+      }, { timeout: 10000 });
+    } catch (error: unknown) {
+      if (isLockTimeoutError(error)) {
+        throw new AppError('Transaction could not be completed. Please retry.', 503);
+      }
+      throw error;
     }
-
-    const referenceId = crypto.randomUUID();
-    const newSourceBalance = sourceBalance - amount;
-    const newDestBalance = Number(destAccount.balance) + amount;
-
-    // Atomic transfer: decrease source, increase destination, record transaction
-    const [, , transaction] = await prisma.$transaction([
-      prisma.account.update({
-        where: { id: sourceAccountId },
-        data: { balance: newSourceBalance },
-      }),
-      prisma.account.update({
-        where: { id: destAccountId },
-        data: { balance: newDestBalance },
-      }),
-      prisma.transaction.create({
-        data: {
-          accountId: sourceAccountId,
-          destinationAccountId: destAccountId,
-          referenceId,
-          type: 'TRANSFER',
-          amount,
-          resultingBalance: newSourceBalance,
-        },
-      }),
-    ]);
 
     // Create notification for the source account owner
     await notificationService.createForTransaction(userId, 'TRANSFER', amount, sourceAccountId);
@@ -228,10 +292,10 @@ class TransactionService implements ITransactionService {
     webhookService.dispatchEvent(userId, {
       type: 'transaction.completed',
       timestamp: new Date().toISOString(),
-      data: { transaction: toTransaction(transaction) },
+      data: { transaction: result },
     }).catch(() => { /* fire-and-forget */ });
 
-    return toTransaction(transaction);
+    return result;
   }
 
   /**

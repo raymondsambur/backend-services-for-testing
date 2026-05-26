@@ -1,5 +1,7 @@
 import express, { Request, Response, NextFunction } from 'express';
-import cors from 'cors';
+import helmet from 'helmet';
+import compression from 'compression';
+import cors, { CorsOptions } from 'cors';
 import swaggerUi from 'swagger-ui-express';
 import v1Router from './routes/v1';
 import v2Router from './routes/v2';
@@ -8,15 +10,56 @@ import { errorHandler } from './middleware/errorHandler';
 import { authenticatedRateLimiter, authEndpointRateLimiter } from './middleware/rateLimiter';
 import { delayMiddleware } from './middleware/delay';
 import { apiVersionMiddleware } from './middleware/apiVersion';
+import { config } from './config';
 
 const app = express();
 
-// Body parsing middleware
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+// --- Middleware ordering: helmet → compression → body parsers → CORS → existing middleware → error handler ---
 
-// CORS configuration
-app.use(cors());
+// 1. Security headers (must be first to cover all responses including errors)
+app.use(helmet());
+
+// 2. Response compression (before routes, after helmet)
+app.use(compression({
+  threshold: 1024,
+  filter: (req, res) => {
+    if (req.headers['x-no-compression']) return false;
+    return compression.filter(req, res);
+  },
+}));
+
+// 3. Body parsing middleware with size limits
+app.use(express.json({ limit: '1mb' }));
+app.use(express.urlencoded({ extended: true, limit: '1mb' }));
+
+// 4. CORS configuration with environment-aware origin filtering
+export function buildCorsOptions(): CorsOptions {
+  if (config.nodeEnv === 'development') {
+    return { origin: true, credentials: true };
+  }
+
+  const originsEnv = process.env.CORS_ORIGINS?.trim();
+  if (!originsEnv) {
+    return { origin: false };
+  }
+
+  const allowlist = originsEnv.split(',').map(o => o.trim()).filter(Boolean);
+  return {
+    origin: (origin, callback) => {
+      if (!origin || allowlist.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(null, false);
+      }
+    },
+    credentials: true,
+  };
+}
+
+const corsOptions = buildCorsOptions();
+app.use(cors(corsOptions));
+
+// --- Existing middleware and routes below ---
 
 // Health check endpoint
 app.get('/health', (_req, res) => {

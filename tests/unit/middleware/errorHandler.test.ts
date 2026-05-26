@@ -223,6 +223,26 @@ describe('errorHandler middleware', () => {
     });
   });
 
+  describe('PayloadTooLarge error handling', () => {
+    it('should return 413 for entity.too.large errors', () => {
+      const error = new Error('request entity too large') as any;
+      error.type = 'entity.too.large';
+      const req = createMockReq();
+      const res = createMockRes();
+
+      errorHandler(error, req, res, mockNext);
+
+      expect(res.status).toHaveBeenCalledWith(413);
+      const response = (res.json as jest.Mock).mock.calls[0][0];
+      expect(response.status).toBe(413);
+      expect(response.error).toBe('Payload Too Large');
+      expect(response.message).toBe('Request body exceeded maximum allowed size of 1MB');
+      expect(response.timestamp).toBeDefined();
+      const parsed = new Date(response.timestamp);
+      expect(parsed.toISOString()).toBe(response.timestamp);
+    });
+  });
+
   describe('Multer error handling', () => {
     it('should transform LIMIT_FILE_SIZE to 422', () => {
       // Simulate a MulterError
