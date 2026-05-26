@@ -1,0 +1,14 @@
+node_modules
+dist
+coverage
+uploads
+.env
+.git
+.gitignore
+.kiro
+*.log
+README.md
+docker-compose.yml
+.dockerignore
+tests
+sdk

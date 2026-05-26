@@ -1,0 +1,78 @@
+services:
+  # ─── PostgreSQL Database ──────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: api-testing-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: api_testing
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d api_testing"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
+
+  # ─── Database Migrations ────────────────────────────────────────────────────
+  migrations:
+    build:
+      context: .
+      target: build
+    container_name: api-testing-migrations
+    command: npx prisma migrate deploy
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/api_testing
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  # ─── Database Seeding ───────────────────────────────────────────────────────
+  seed:
+    build:
+      context: .
+      target: build
+    container_name: api-testing-seed
+    command: npx prisma db seed
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/api_testing
+    depends_on:
+      migrations:
+        condition: service_completed_successfully
+    restart: "no"
+
+  # ─── API Service ────────────────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      target: production
+    container_name: api-testing-api
+    environment:
+      PORT: ${PORT:-3000}
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/api_testing
+      JWT_SECRET: ${JWT_SECRET:-docker-jwt-secret-change-in-production}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-docker-refresh-secret-change-in-production}
+      SEED_DATA: "false"
+      NODE_ENV: production
+    ports:
+      - "${PORT:-3000}:${PORT:-3000}"
+    depends_on:
+      seed:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://localhost:${PORT:-3000}/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+    name: api-testing-postgres-data
